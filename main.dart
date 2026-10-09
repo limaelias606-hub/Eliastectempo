@@ -1,302 +1,851 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
 
-void main() => runApp(const EliastectempoApp());
+void main() {
+  runApp(const EliastectempoApp());
+}
 
-const bg = Color(0xFF101326);
-const panel = Color(0xFF202744);
-const neon = Color(0xFF72F1B8);
-const cream = Color(0xFFFFE8A3);
-const pink = Color(0xFFFF79B8);
-const blue = Color(0xFF78C9FF);
+const Color neonGreen = Color(0xFF39FF88);
+const Color neonBlue = Color(0xFF39D9FF);
+const Color darkBackground = Color(0xFF080D1C);
+const Color panelColor = Color(0xFF121C32);
+const Color neonPink = Color(0xFFFF5EDB);
 
 class EliastectempoApp extends StatelessWidget {
   const EliastectempoApp({super.key});
+
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Eliastectempo',
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      brightness: Brightness.dark,
-      scaffoldBackgroundColor: bg,
-      colorScheme: ColorScheme.fromSeed(seedColor: neon, brightness: Brightness.dark),
-      fontFamily: 'monospace',
-      useMaterial3: true,
-    ),
-    home: const WeatherHome(),
-  );
-}
-
-class WeatherData {
-  final double temp, feels, wind;
-  final int humidity, code, isDay;
-  final DateTime time;
-  final List<Map<String, dynamic>> hourly, daily;
-  final double uv;
-  const WeatherData({required this.temp, required this.feels, required this.wind,
-    required this.humidity, required this.code, required this.isDay, required this.time,
-    required this.hourly, required this.daily, required this.uv});
-
-  factory WeatherData.fromJson(Map<String, dynamic> j) {
-    final c = j['current'] as Map<String, dynamic>;
-    final h = j['hourly'] as Map<String, dynamic>;
-    final d = j['daily'] as Map<String, dynamic>;
-    final now = DateTime.parse(c['time'] as String);
-    final ht = List<String>.from(h['time'] as List);
-    final temps = List<num>.from(h['temperature_2m'] as List);
-    final codes = List<num>.from(h['weather_code'] as List);
-    final hs = <Map<String,dynamic>>[];
-    for (int i=0; i<ht.length; i++) {
-      final dt = DateTime.parse(ht[i]);
-      if (!dt.isBefore(now) && hs.length < 8) {
-        hs.add({'time':dt, 'temp':temps[i].toDouble(), 'code':codes[i].toInt()});
-      }
-    }
-    final dates = List<String>.from(d['time'] as List);
-    final maxes = List<num>.from(d['temperature_2m_max'] as List);
-    final mins = List<num>.from(d['temperature_2m_min'] as List);
-    final dcodes = List<num>.from(d['weather_code'] as List);
-    final uvList = List<num>.from(d['uv_index_max'] as List);
-    final ds = <Map<String,dynamic>>[];
-    for (int i=0; i<dates.length; i++) {
-      ds.add({'date':DateTime.parse(dates[i]), 'max':maxes[i].toDouble(),
-        'min':mins[i].toDouble(), 'code':dcodes[i].toInt(), 'uv':uvList[i].toDouble()});
-    }
-    return WeatherData(
-      temp:(c['temperature_2m'] as num).toDouble(),
-      feels:(c['apparent_temperature'] as num).toDouble(),
-      humidity:(c['relative_humidity_2m'] as num).toInt(),
-      wind:(c['wind_speed_10m'] as num).toDouble(),
-      code:(c['weather_code'] as num).toInt(),
-      isDay:(c['is_day'] as num).toInt(),
-      time:now, hourly:hs, daily:ds,
-      uv: ds.isNotEmpty ? ds.first['uv'] as double : 0,
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Eliastectempo',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: darkBackground,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: neonGreen,
+          brightness: Brightness.dark,
+        ),
+        fontFamily: 'monospace',
+      ),
+      home: const WeatherHomePage(),
     );
   }
 }
 
-class WeatherService {
-  Future<WeatherData> fetch(double lat, double lon) async {
-    final uri = Uri.https('api.open-meteo.com', '/v1/forecast', {
-      'latitude':'$lat','longitude':'$lon',
-      'current':'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m',
-      'hourly':'temperature_2m,weather_code',
-      'daily':'weather_code,temperature_2m_max,temperature_2m_min,uv_index_max',
-      'forecast_days':'7','timezone':'auto',
-    });
-    final r = await http.get(uri).timeout(const Duration(seconds:15));
-    if (r.statusCode != 200) throw Exception('O serviço do tempo respondeu ${r.statusCode}.');
-    return WeatherData.fromJson(jsonDecode(r.body) as Map<String,dynamic>);
-  }
+class WeatherHomePage extends StatefulWidget {
+  const WeatherHomePage({super.key});
+
+  @override
+  State<WeatherHomePage> createState() => _WeatherHomePageState();
 }
 
-class WeatherHome extends StatefulWidget {
-  const WeatherHome({super.key});
-  @override State<WeatherHome> createState() => _WeatherHomeState();
-}
-class _WeatherHomeState extends State<WeatherHome> with TickerProviderStateMixin {
-  final service = WeatherService();
-  late final AnimationController bounce = AnimationController(vsync:this, duration:const Duration(milliseconds:700))..repeat(reverse:true);
-  WeatherData? data;
+class _WeatherHomePageState extends State<WeatherHomePage> {
+  // Coordenadas padrão de Londrina, Paraná.
+  static const double latitude = -23.3045;
+  static const double longitude = -51.1696;
+
   bool loading = true;
-  String place = 'Londrina, PR';
-  String? error;
-  double lat = -23.3045, lon = -51.1696;
+  String? errorMessage;
 
-  @override void initState() { super.initState(); load(useLocation:false); }
-  @override void dispose() { bounce.dispose(); super.dispose(); }
+  double temperature = 0;
+  double feelsLike = 0;
+  double humidity = 0;
+  double windSpeed = 0;
+  double precipitation = 0;
+  int weatherCode = 0;
+  bool isDay = true;
 
-  Future<void> load({required bool useLocation}) async {
-    setState(() { loading=true; error=null; });
+  List<Map<String, dynamic>> hourlyForecast = [];
+
+  @override
+  void initState() {
+    super.initState();
+    loadWeather();
+  }
+
+  Future<void> loadWeather() async {
+    if (!mounted) return;
+
+    setState(() {
+      loading = true;
+      errorMessage = null;
+    });
+
+    final client = HttpClient();
+
     try {
-      if (useLocation) {
-        if (!await Geolocator.isLocationServiceEnabled()) throw Exception('Ative a localização do aparelho.');
-        var p = await Geolocator.checkPermission();
-        if (p == LocationPermission.denied) p = await Geolocator.requestPermission();
-        if (p == LocationPermission.denied || p == LocationPermission.deniedForever) {
-          throw Exception('Permissão de localização negada. Mostrando a previsão de Londrina.');
-        }
-        final pos = await Geolocator.getCurrentPosition();
-        lat=pos.latitude; lon=pos.longitude; place='Minha localização';
+      final uri = Uri.https(
+        'api.open-meteo.com',
+        '/v1/forecast',
+        {
+          'latitude': latitude.toString(),
+          'longitude': longitude.toString(),
+          'current':
+              'temperature_2m,relative_humidity_2m,apparent_temperature,'
+                  'is_day,precipitation,weather_code,wind_speed_10m',
+          'hourly': 'temperature_2m,precipitation_probability',
+          'forecast_days': '1',
+          'timezone': 'America/Sao_Paulo',
+        },
+      );
+
+      final request = await client.getUrl(uri).timeout(
+            const Duration(seconds: 15),
+          );
+
+      request.headers.set(
+        HttpHeaders.acceptHeader,
+        'application/json',
+      );
+
+      final response = await request.close().timeout(
+            const Duration(seconds: 15),
+          );
+
+      final body = await response.transform(utf8.decoder).join();
+
+      if (response.statusCode != 200) {
+        throw Exception('O serviço do tempo está indisponível.');
       }
-      final result = await service.fetch(lat,lon);
+
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      final current = data['current'] as Map<String, dynamic>;
+      final hourly = data['hourly'] as Map<String, dynamic>;
+
+      final times = List<String>.from(hourly['time'] as List);
+      final temperatures =
+          List<num>.from(hourly['temperature_2m'] as List);
+      final rainChances =
+          List<num>.from(hourly['precipitation_probability'] as List);
+
+      final now = DateTime.now();
+
+      final nextHours = <Map<String, dynamic>>[];
+
+      for (int i = 0; i < times.length; i++) {
+        final forecastTime = DateTime.tryParse(times[i]);
+
+        if (forecastTime == null) continue;
+
+        if (!forecastTime.isBefore(now) && nextHours.length < 6) {
+          nextHours.add({
+            'time': times[i],
+            'temperature': temperatures[i],
+            'rain': rainChances[i],
+          });
+        }
+      }
+
       if (!mounted) return;
-      setState(() { data=result; loading=false; });
-    } catch(e) {
+
+      setState(() {
+        temperature = (current['temperature_2m'] as num).toDouble();
+        feelsLike =
+            (current['apparent_temperature'] as num).toDouble();
+        humidity =
+            (current['relative_humidity_2m'] as num).toDouble();
+        windSpeed = (current['wind_speed_10m'] as num).toDouble();
+        precipitation =
+            (current['precipitation'] as num).toDouble();
+        weatherCode = (current['weather_code'] as num).toInt();
+        isDay = (current['is_day'] as num).toInt() == 1;
+        hourlyForecast = nextHours;
+        loading = false;
+      });
+    } catch (_) {
       if (!mounted) return;
-      setState(() { loading=false; error=e.toString().replaceFirst('Exception: ',''); });
+
+      setState(() {
+        loading = false;
+        errorMessage =
+            'Não consegui acessar a previsão agora. '
+            'Confira sua internet e tente novamente.';
+      });
+    } finally {
+      client.close(force: true);
     }
   }
 
-  bool isRain(int c) => [51,53,55,56,57,61,63,65,66,67,80,81,82].contains(c);
-  bool isStorm(int c) => [95,96,99].contains(c);
-  bool isFog(int c) => [45,48].contains(c);
-  bool isSnow(int c) => [71,73,75,77,85,86].contains(c);
-  bool isCloud(int c) => [1,2,3].contains(c);
-
-  String condition(int c) {
-    if (isStorm(c)) return 'TEMPESTADE';
-    if (isRain(c)) return 'CHUVA';
-    if (isFog(c)) return 'NEBLINA';
-    if (isSnow(c)) return 'NEVE';
-    if (c==0) return 'CÉU LIMPO';
-    if (isCloud(c)) return 'NUBLADO';
+  String get weatherDescription {
+    if (weatherCode == 0) return 'CÉU LIMPO';
+    if (weatherCode <= 3) return 'PARCIALMENTE NUBLADO';
+    if (weatherCode == 45 || weatherCode == 48) return 'NEBLINA';
+    if (weatherCode >= 51 && weatherCode <= 57) return 'GAROA';
+    if (weatherCode >= 61 && weatherCode <= 67) return 'CHUVA';
+    if (weatherCode >= 71 && weatherCode <= 77) return 'NEVE';
+    if (weatherCode >= 80 && weatherCode <= 82) return 'PANCADAS';
+    if (weatherCode >= 85 && weatherCode <= 86) return 'NEVE';
+    if (weatherCode >= 95) return 'TEMPESTADE';
     return 'TEMPO INSTÁVEL';
   }
-  IconData iconFor(int c, [int day=1]) {
-    if (isStorm(c)) return Icons.thunderstorm;
-    if (isRain(c)) return Icons.umbrella;
-    if (isFog(c)) return Icons.foggy;
-    if (isSnow(c)) return Icons.ac_unit;
-    if (c==0) return day==1 ? Icons.wb_sunny : Icons.nightlight_round;
-    if (isCloud(c)) return Icons.cloud;
-    return Icons.cloud_queue;
-  }
-  String message(WeatherData w) {
-    if (isStorm(w.code)) return 'O céu ativou o modo chefão final. Vai pra um lugar seguro e nada de bancar o herói em área aberta.';
-    if (isRain(w.code)) return 'Guarda-chuva, criatura. A nuvem não aceita negociação e seu cabelo não tem seguro.';
-    if (isFog(w.code)) return 'Neblina no mapa! Vai com calma no trânsito. Need for Speed fica pra dentro de casa.';
-    if (isSnow(w.code)) return 'Tá nevando! Se agasalha bem e não tenta virar pinguim profissional.';
-    if (w.temp <= 10) return 'Bota uma blusa, criatura. O look “picolé humano” não favorece ninguém.';
-    if (w.temp <= 17) return 'Friozinho detectado. Uma jaqueta não vai deletar seu estilo, prometo.';
-    if (w.temp >= 34) return 'Calor nível air fryer. Água, sombra e protetor solar. Sem bancar o lagarto.';
-    if (w.temp >= 28) return 'Tá quente! Passa protetor e bebe água. Sua pele não tem botão de desfazer.';
-    if (w.wind >= 35) return 'Segura o boné! O vento tá tentando roubar seus pertences e sua dignidade.';
-    if (w.uv >= 8) return 'Índice UV muito alto. Protetor, sombra e chapéu: não é hora de virar tomate.';
-    if (w.humidity >= 85) return 'Umidade lá em cima. Seu cabelo pode decidir seguir carreira solo hoje.';
-    if (w.code==0) return 'Céu limpo! Aproveita, mas passa protetor. O sol não é seu amigo íntimo.';
-    if (isCloud(w.code)) return 'Nublado. O sol foi ali resolver uns negócios, aparentemente.';
-    return 'Tempo indeciso, igual quem abre a geladeira sem saber o que quer. Confere antes de sair.';
+
+  String get weatherEmoji {
+    if (weatherCode == 0) return isDay ? '☀️' : '🌙';
+    if (weatherCode <= 3) return isDay ? '🌤️' : '☁️';
+    if (weatherCode == 45 || weatherCode == 48) return '🌫️';
+    if (weatherCode >= 51 && weatherCode <= 67) return '🌧️';
+    if (weatherCode >= 71 && weatherCode <= 77) return '❄️';
+    if (weatherCode >= 80 && weatherCode <= 82) return '🌦️';
+    if (weatherCode >= 85 && weatherCode <= 86) return '🌨️';
+    if (weatherCode >= 95) return '⛈️';
+    return '🌥️';
   }
 
-  @override Widget build(BuildContext context) {
-    final w=data;
+  String get mascotFace {
+    if (weatherCode >= 51 && weatherCode <= 99) return '(>_<)';
+    if (temperature <= 15) return '(;_;)';
+    if (temperature >= 32) return '(x_x)';
+    if (windSpeed >= 30) return '@_@';
+    return '(o‿o)';
+  }
+
+  String get mascotSpeech {
+    if (weatherCode >= 95) {
+      return 'EI! TEMPESTADE! PROCURE UM LUGAR SEGURO!';
+    }
+
+    if (weatherCode >= 51 && weatherCode <= 82) {
+      return 'VAI CHOVER! LEVA O GUARDA-CHUVA, CHEFE!';
+    }
+
+    if (temperature <= 15) {
+      return 'TÁ FRIO! CADÊ O CASACO, CRIATURA?';
+    }
+
+    if (temperature >= 32) {
+      return 'TÁ UM FORNO! ÁGUA E PROTETOR SOLAR!';
+    }
+
+    if (windSpeed >= 30) {
+      return 'O VENTO TÁ FORTE! SEGURA O BONÉ!';
+    }
+
+    if (weatherCode == 0 && isDay) {
+      return 'SOLZÃO! HOJE O TEMPO TÁ DE BOM HUMOR.';
+    }
+
+    return 'PREVISÃO ATUALIZADA. VAMOS VIVER!';
+  }
+
+  String get lastUpdated {
+    final now = DateTime.now();
+    final hour = now.hour.toString().padLeft(2, '0');
+    final minute = now.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(backgroundColor:bg, title:const Text('ELIASTECTEMPO',style:TextStyle(color:neon,fontWeight:FontWeight.w900,letterSpacing:1.2)),
-        actions:[
-          IconButton(tooltip:'Atualizar previsão',onPressed:()=>load(useLocation:false),icon:const Icon(Icons.refresh,color:neon)),
-          IconButton(tooltip:'Usar minha localização',onPressed:()=>load(useLocation:true),icon:const Icon(Icons.my_location,color:neon)),
-        ]),
-      body:RefreshIndicator(onRefresh:()=>load(useLocation:false),child:ListView(padding:const EdgeInsets.fromLTRB(16,6,16,28),children:[
-        Container(padding:const EdgeInsets.all(17),decoration:BoxDecoration(color:panel,border:Border.all(color:neon,width:2),borderRadius:BorderRadius.circular(6),boxShadow:const [BoxShadow(color:Color(0x3372F1B8),blurRadius:16)]),
-          child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-            Text(place.toUpperCase(),style:const TextStyle(color:cream,fontWeight:FontWeight.bold,fontSize:12,letterSpacing:1.2)),
-            const SizedBox(height:8),
-            if (loading) const Center(child:Padding(padding:EdgeInsets.all(25),child:CircularProgressIndicator(color:neon)))
-            else if (error!=null) Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-              const Icon(Icons.warning_amber_rounded,color:pink,size:36),const SizedBox(height:8),Text(error!),
-              const SizedBox(height:8),FilledButton(onPressed:()=>load(useLocation:false),child:const Text('TENTAR DE NOVO')),
-            ]) else if (w!=null) ...[
-              Row(children:[
-                Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-                  Text('${w.temp.round()}°',style:const TextStyle(fontSize:64,height:1,fontWeight:FontWeight.w900)),
-                  const SizedBox(height:7),Text(condition(w.code),style:const TextStyle(color:neon,fontWeight:FontWeight.bold,letterSpacing:1.4)),
-                  Text('Sensação ${w.feels.round()}°',style:const TextStyle(color:Colors.white70)),
-                ])),
-                AnimatedBuilder(animation:bounce,builder:(context,child)=>Transform.translate(
-                  offset:Offset(0,math.sin(bounce.value*math.pi)*5),
-                  child:PixelMascot(code:w.code,temp:w.temp,accent:(isRain(w.code)||isStorm(w.code))?blue:(w.temp<=17?blue:cream)),
-                )),
-              ]),
-              const SizedBox(height:15),
-              Container(width:double.infinity,padding:const EdgeInsets.all(13),decoration:BoxDecoration(color:bg,border:Border.all(color:pink,width:1.5)),
-                child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-                  const Text('> RECADO_DO_MASCOTE.exe',style:TextStyle(color:pink,fontWeight:FontWeight.bold,fontSize:11)),
-                  const SizedBox(height:7),Text(message(w),style:const TextStyle(fontSize:13,height:1.5)),
-                ])),
-              const SizedBox(height:13),
-              Row(children:[
-                Expanded(child:StatTile(icon:Icons.water_drop,label:'UMIDADE',value:'${w.humidity}%')),
-                const SizedBox(width:8),Expanded(child:StatTile(icon:Icons.air,label:'VENTO',value:'${w.wind.round()} km/h')),
-                const SizedBox(width:8),Expanded(child:StatTile(icon:Icons.wb_sunny,label:'UV MÁX.',value:w.uv.toStringAsFixed(1))),
-              ]),
-              const SizedBox(height:10),
-              Text('ATUALIZADO ${DateFormat('HH:mm').format(w.time)} · OPEN-METEO',style:const TextStyle(color:Colors.white54,fontSize:10)),
+      body: SafeArea(
+        child: RefreshIndicator(
+          color: neonGreen,
+          backgroundColor: panelColor,
+          onRefresh: loadWeather,
+          child: ListView(
+            padding: const EdgeInsets.all(18),
+            children: [
+              _buildHeader(),
+              const SizedBox(height: 22),
+              _buildWeatherCard(),
+              const SizedBox(height: 16),
+              _buildMascotCard(),
+              const SizedBox(height: 16),
+              _buildStats(),
+              const SizedBox(height: 22),
+              _buildHourlyForecast(),
+              const SizedBox(height: 22),
+              _buildFooter(),
             ],
-          ]),
+          ),
         ),
-        const SizedBox(height:19),
-        const Text('PRÓXIMAS HORAS',style:TextStyle(color:cream,fontWeight:FontWeight.w900,letterSpacing:1.3)),
-        const SizedBox(height:9),
-        if(w!=null) SizedBox(height:105,child:ListView.separated(scrollDirection:Axis.horizontal,itemCount:w.hourly.length,
-          separatorBuilder:(_,__)=>const SizedBox(width:8),itemBuilder:(context,i){
-            final h=w.hourly[i];
-            return Container(width:76,padding:const EdgeInsets.all(9),decoration:BoxDecoration(color:panel,border:Border.all(color:const Color(0xFF414B70))),
-              child:Column(mainAxisAlignment:MainAxisAlignment.spaceAround,children:[
-                Text(DateFormat('HH:mm').format(h['time'] as DateTime),style:const TextStyle(fontSize:10,color:Colors.white70)),
-                Icon(iconFor(h['code'] as int),color:neon,size:21),
-                Text('${(h['temp'] as double).round()}°',style:const TextStyle(fontSize:17,fontWeight:FontWeight.bold)),
-              ]));
-          })),
-        const SizedBox(height:20),
-        const Text('PRÓXIMOS 7 DIAS',style:TextStyle(color:cream,fontWeight:FontWeight.w900,letterSpacing:1.3)),
-        const SizedBox(height:9),
-        if(w!=null) ...w.daily.map((d)=>Container(
-          margin:const EdgeInsets.only(bottom:7),padding:const EdgeInsets.symmetric(horizontal:12,vertical:11),
-          decoration:BoxDecoration(color:panel,border:Border.all(color:const Color(0xFF414B70))),
-          child:Row(children:[
-            SizedBox(width:54,child:Text(DateFormat('EEE', 'pt_BR').format(d['date'] as DateTime).toUpperCase(),style:const TextStyle(color:Colors.white70,fontSize:11))),
-            Icon(iconFor(d['code'] as int),color:neon,size:21),
-            const Spacer(),
-            Text('UV ${(d['uv'] as double).toStringAsFixed(0)}',style:const TextStyle(color:cream,fontSize:11)),
-            const SizedBox(width:12),
-            Text('${(d['min'] as double).round()}°',style:const TextStyle(color:Colors.white60)),
-            const SizedBox(width:9),
-            SizedBox(width:31,child:Text('${(d['max'] as double).round()}°',textAlign:TextAlign.end,style:const TextStyle(fontWeight:FontWeight.bold))),
-          ]),
-        )),
-        const SizedBox(height:14),
-        const Text('BUILD 0.2 · PIXEL WEATHER SYSTEM',textAlign:TextAlign.center,style:TextStyle(color:Colors.white30,fontSize:10,letterSpacing:1.1)),
-      ])),
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: loading ? null : loadWeather,
+        backgroundColor: neonGreen,
+        foregroundColor: darkBackground,
+        tooltip: 'Atualizar previsão',
+        child: const Icon(Icons.refresh),
+      ),
     );
   }
-}
 
-class StatTile extends StatelessWidget {
-  final IconData icon; final String label,value;
-  const StatTile({super.key,required this.icon,required this.label,required this.value});
-  @override Widget build(BuildContext context)=>Container(padding:const EdgeInsets.all(9),decoration:BoxDecoration(color:bg,border:Border.all(color:const Color(0xFF414B70))),
-    child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
-      Icon(icon,color:neon,size:18),const SizedBox(height:6),
-      Text(label,style:const TextStyle(fontSize:8,color:Colors.white60)),const SizedBox(height:3),
-      FittedBox(fit:BoxFit.scaleDown,alignment:Alignment.centerLeft,child:Text(value,style:const TextStyle(fontSize:13,fontWeight:FontWeight.bold))),
-    ]));
-}
-
-class PixelMascot extends StatelessWidget {
-  final int code; final double temp; final Color accent;
-  const PixelMascot({super.key,required this.code,required this.temp,required this.accent});
-  @override Widget build(BuildContext context)=>SizedBox(width:112,height:126,child:CustomPaint(painter:SpritePainter(code:code,temp:temp,accent:accent),
-    child:Center(child:Padding(padding:const EdgeInsets.only(top:24),child:Icon(
-      [95,96,99].contains(code)?Icons.bolt:[51,53,55,61,63,65,80,81,82].contains(code)?Icons.umbrella:
-      temp<=17?Icons.ac_unit:temp>=28?Icons.wb_sunny:code==0?Icons.sentiment_satisfied_alt:Icons.cloud,
-      size:29,color:accent,
-    )))));
-}
-class SpritePainter extends CustomPainter {
-  final int code; final double temp; final Color accent;
-  SpritePainter({required this.code,required this.temp,required this.accent});
-  @override void paint(Canvas canvas,Size size) {
-    final p=Paint()..isAntiAlias=false;
-    void r(int x,int y,int w,int h,Color c){p.color=c;canvas.drawRect(Rect.fromLTWH(x.toDouble(),y.toDouble(),w.toDouble(),h.toDouble()),p);}
-    // Chunky 8-bit sprite: outline, face, cheeks, jacket and shoes.
-    r(34,5,44,9,const Color(0xFF080A14)); r(26,14,60,43,const Color(0xFF080A14));
-    r(30,17,52,34,const Color(0xFFFFD7A8)); r(23,29,8,12,const Color(0xFFFFD7A8)); r(81,29,8,12,const Color(0xFFFFD7A8));
-    r(36,29,8,8,const Color(0xFF101326)); r(63,29,8,8,const Color(0xFF101326));
-    r(43,43,20,4,const Color(0xFFB94B6A)); r(30,52,52,37,accent);
-    r(22,57,8,23,accent); r(82,57,8,23,accent);
-    if(temp<=17){ r(27,51,58,8,blue); r(43,57,23,25,Color(0xFF355B9A)); }
-    if(temp>=28){ r(29,15,52,5,cream); r(33,17,8,8,Color(0xFF101326)); r(61,17,8,8,Color(0xFF101326)); }
-    if([61,63,65,80,81,82,95,96,99].contains(code)){ r(19,25,7,4,blue); r(87,37,7,4,blue); r(17,43,5,5,blue); r(89,51,5,5,blue); }
-    if([95,96,99].contains(code)){ r(14,13,6,12,cream); r(18,20,8,5,cream); }
-    r(32,89,17,13,const Color(0xFF080A14)); r(63,89,17,13,const Color(0xFF080A14));
-    r(27,100,24,7,const Color(0xFF080A14)); r(60,100,24,7,const Color(0xFF080A14));
-    r(20,11,8,4,pink); r(83,11,8,4,neon);
+  Widget _buildHeader() {
+    return Row(
+      children: [
+        Container(
+          height: 52,
+          width: 52,
+          decoration: BoxDecoration(
+            color: neonGreen.withOpacity(0.12),
+            border: Border.all(color: neonGreen, width: 2),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(
+            Icons.wb_twilight,
+            color: neonGreen,
+            size: 30,
+          ),
+        ),
+        const SizedBox(width: 12),
+        const Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'ELIASTEMPO',
+                style: TextStyle(
+                  color: neonGreen,
+                  fontSize: 21,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.5,
+                ),
+              ),
+              SizedBox(height: 4),
+              Text(
+                'PREVISÃO DO TEMPO // 198X',
+                style: TextStyle(
+                  color: neonBlue,
+                  fontSize: 9,
+                  letterSpacing: 1,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 8,
+            vertical: 6,
+          ),
+          decoration: BoxDecoration(
+            border: Border.all(color: neonGreen),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            '● LIVE',
+            style: TextStyle(
+              color: neonGreen,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ],
+    );
   }
-  @override bool shouldRepaint(covariant SpritePainter old)=>old.code!=code||old.temp!=temp||old.accent!=accent;
+
+  Widget _buildWeatherCard() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF182C4C),
+            Color(0xFF10182C),
+            Color(0xFF20152F),
+          ],
+        ),
+        border: Border.all(
+          color: neonBlue.withOpacity(0.8),
+          width: 1.5,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: neonBlue.withOpacity(0.08),
+            blurRadius: 20,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.location_on, color: neonPink, size: 17),
+              SizedBox(width: 5),
+              Text(
+                'LONDRINA, PARANÁ',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                  letterSpacing: 1,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (loading && errorMessage == null)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(30),
+                child: CircularProgressIndicator(color: neonGreen),
+              ),
+            )
+          else if (errorMessage != null)
+            _buildError()
+          else ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${temperature.round()}°',
+                        style: const TextStyle(
+                          fontSize: 76,
+                          height: 1,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        weatherDescription,
+                        style: const TextStyle(
+                          color: neonGreen,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Sensação ${feelsLike.round()}°',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Column(
+                  children: [
+                    Text(
+                      weatherEmoji,
+                      style: const TextStyle(fontSize: 65),
+                    ),
+                    const Text(
+                      'CLIMA AGORA',
+                      style: TextStyle(
+                        color: neonBlue,
+                        fontSize: 9,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Divider(color: neonBlue.withOpacity(0.25)),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(
+                  Icons.access_time,
+                  color: neonBlue,
+                  size: 14,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'ATUALIZADO ÀS $lastUpdated',
+                    style: const TextStyle(
+                      color: Colors.white60,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+                const Text(
+                  'DADOS REAIS',
+                  style: TextStyle(
+                    color: neonGreen,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildError() {
+    return Column(
+      children: [
+        const Icon(
+          Icons.cloud_off,
+          size: 48,
+          color: neonPink,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          errorMessage!,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 14),
+        OutlinedButton.icon(
+          onPressed: loadWeather,
+          icon: const Icon(Icons.refresh),
+          label: const Text('TENTAR NOVAMENTE'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMascotCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: panelColor,
+        border: Border.all(
+          color: neonPink.withOpacity(0.75),
+        ),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 95,
+            height: 105,
+            decoration: BoxDecoration(
+              color: const Color(0xFF211735),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text(
+                  'PIXEL BOT',
+                  style: TextStyle(
+                    color: neonPink,
+                    fontSize: 9,
+                    letterSpacing: 1,
+                  ),
+                ),
+                const SizedBox(height: 9),
+                Text(
+                  mascotFace,
+                  style: const TextStyle(
+                    color: neonGreen,
+                    fontSize: 19,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                const Text(
+                  '■ ▪ ■',
+                  style: TextStyle(
+                    color: neonBlue,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'FALA, CHEFE!',
+                  style: TextStyle(
+                    color: neonPink,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 12,
+                    letterSpacing: 1,
+                  ),
+                ),
+                const SizedBox(height: 9),
+                Text(
+                  loading
+                      ? 'Tô consultando o clima...'
+                      : errorMessage != null
+                          ? 'Sem sinal lá fora ou aqui dentro? Tenta de novo!'
+                          : mascotSpeech,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    height: 1.6,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStats() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '/// CONDIÇÕES ATUAIS',
+          style: TextStyle(
+            color: neonBlue,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _buildStatCard(
+                Icons.water_drop,
+                'UMIDADE',
+                loading || errorMessage != null
+                    ? '--'
+                    : '${humidity.round()}%',
+                neonBlue,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _buildStatCard(
+                Icons.air,
+                'VENTO',
+                loading || errorMessage != null
+                    ? '--'
+                    : '${windSpeed.round()} km/h',
+                neonGreen,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: _buildStatCard(
+                Icons.umbrella,
+                'PRECIPITAÇÃO',
+                loading || errorMessage != null
+                    ? '--'
+                    : '${precipitation.toStringAsFixed(1)} mm',
+                neonPink,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _buildStatCard(
+                Icons.thermostat,
+                'SENSAÇÃO',
+                loading || errorMessage != null
+                    ? '--'
+                    : '${feelsLike.round()}°C',
+                const Color(0xFFFFB347),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatCard(
+    IconData icon,
+    String label,
+    String value,
+    Color accent,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: panelColor,
+        border: Border.all(color: accent.withOpacity(0.45)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: accent, size: 22),
+          const SizedBox(height: 12),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 9,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 6),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: TextStyle(
+                color: accent,
+                fontSize: 19,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHourlyForecast() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '/// PRÓXIMAS HORAS',
+          style: TextStyle(
+            color: neonBlue,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (loading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(18),
+              child: CircularProgressIndicator(color: neonGreen),
+            ),
+          )
+        else if (errorMessage != null)
+          const Text(
+            'Previsão horária indisponível.',
+            style: TextStyle(color: Colors.white54),
+          )
+        else if (hourlyForecast.isEmpty)
+          const Text(
+            'Não há mais horários disponíveis hoje.',
+            style: TextStyle(color: Colors.white54),
+          )
+        else
+          SizedBox(
+            height: 125,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: hourlyForecast.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final item = hourlyForecast[index];
+                final time = DateTime.parse(item['time'] as String);
+                final temp = (item['temperature'] as num).round();
+                final rain = (item['rain'] as num).round();
+
+                return Container(
+                  width: 94,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: panelColor,
+                    border: Border.all(
+                      color: neonBlue.withOpacity(0.35),
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        '${time.hour.toString().padLeft(2, '0')}:00',
+                        style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 10,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        temp >= 30 ? '☀️' : rain >= 40 ? '🌧️' : '🌤️',
+                        style: const TextStyle(fontSize: 23),
+                      ),
+                      const SizedBox(height: 7),
+                      Text(
+                        '$temp°C',
+                        style: const TextStyle(
+                          color: neonGreen,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 17,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Chuva $rain%',
+                        style: const TextStyle(
+                          color: neonBlue,
+                          fontSize: 9,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildFooter() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: neonGreen.withOpacity(0.3)),
+        ),
+      ),
+      child: const Column(
+        children: [
+          Text(
+            'ELIASTEC // WEATHER SYSTEM',
+            style: TextStyle(
+              color: neonGreen,
+              fontWeight: FontWeight.bold,
+              fontSize: 11,
+              letterSpacing: 1.1,
+            ),
+          ),
+          SizedBox(height: 7),
+          Text(
+            'FEITO COM CAFÉ, PIXELS E PREVISÃO DO TEMPO.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 8,
+              letterSpacing: 0.5,
+            ),
+          ),
+          SizedBox(height: 6),
+          Text(
+            'DADOS METEOROLÓGICOS: OPEN-METEO',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 8,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
